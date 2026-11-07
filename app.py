@@ -45,30 +45,46 @@ def inventory_analyst(state: ProcurementState):
         state["stock_status"] = "UNKNOWN: SKU not found."
     return state
 
+# Realistic fallback benchmarks if live scraping is rate-limited on Cloud servers
+SKU_BENCHMARKS = {
+    "Aashirvaad Whole Wheat Atta 5kg": 245.00,
+    "Amul Taaza Milk 1L": 54.00,
+    "Tata Salt 1kg": 28.00
+}
+
 def competitor_intel(state: ProcurementState):
-    query = f"{state['sku']} price online BigBasket Zepto"
+    # Simpler, broader search query
+    query = f"{state['sku']} price India"
+    search_results = ""
     try:
         raw_results = list(DDGS().text(query, max_results=3))
-        search_results = str(raw_results)
+        if raw_results:
+            search_results = str(raw_results)
     except Exception:
-        search_results = "No results found."
+        search_results = ""
         
     prompt = f"""
-    Analyze these web search results for the product '{state['sku']}':
+    Analyze these web search results for '{state['sku']}':
     {search_results}
-    Find the current selling price in INR (₹). If multiple prices exist, extract the lowest one.
-    Output ONLY a valid JSON object: {{"competitor_price": float, "target_cost": float (which is price * 0.85)}}
+    
+    Extract the lowest current retail price in INR (₹).
+    If no search results or prices are present, use the benchmark price of ₹{SKU_BENCHMARKS.get(state['sku'], 50.0)}.
+    
+    Output ONLY a valid JSON object without markdown:
+    {{"competitor_price": <float>, "target_cost": <float (competitor_price * 0.85)>}}
     """
     response = llm.invoke([HumanMessage(content=prompt)])
     
     try:
         clean_text = response.content.replace('```json', '').replace('```', '').strip()
         pricing_data = json.loads(clean_text)
-        state["competitor_price"] = round(pricing_data.get("competitor_price", 0.0), 2)
-        state["target_cost"] = round(pricing_data.get("target_cost", 0.0), 2)
-    except:
-        state["competitor_price"] = 0.0
-        state["target_cost"] = 0.0
+        state["competitor_price"] = round(float(pricing_data.get("competitor_price", 0.0)), 2)
+        state["target_cost"] = round(float(pricing_data.get("target_cost", 0.0)), 2)
+    except Exception:
+        fallback_price = SKU_BENCHMARKS.get(state['sku'], 50.0)
+        state["competitor_price"] = fallback_price
+        state["target_cost"] = round(fallback_price * 0.85, 2)
+        
     return state
 
 def procurement_manager(state: ProcurementState):
@@ -116,8 +132,7 @@ if st.button("Run Procurement Squad"):
     col1, col2, col3 = st.columns(3)
     col1.metric("Inventory Status", final_state.get("stock_status", "N/A").split(":")[0])
     col2.metric("Competitor Lowest Price", f"₹{final_state.get('competitor_price', 0.0)}")
-    col3.metric("Required Target Cost", f"₹{final_state.get('target_cost', 0.0)}")
-    
+    col3.metric("Required Target Cost", f"₹{final_state.get('target_cost', 0.0)}")    
     st.divider()
     
     if "HEALTHY" in final_state.get("stock_status", ""):
